@@ -2,7 +2,7 @@ import http from 'k6/http';
 import { check } from 'k6';
 
 export let options = {
-  vus: 50,           // 50 usuarios virtuales concurrentes
+  vus: 800,           // 50 usuarios virtuales concurrentes
   iterations: 10000  // total de requests = 10.000
 };
 

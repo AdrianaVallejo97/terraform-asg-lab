@@ -1,16 +1,21 @@
+#####################################################
 # VPC
+#####################################################
 resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
   tags = { Name = "lab-vpc" }
 }
 
-# Two public subnets
+#####################################################
+# PUBLIC SUBNETS
+#####################################################
 resource "aws_subnet" "s1" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.1.0/24"
   availability_zone = "us-east-1a"
   map_public_ip_on_launch = true
 }
+
 resource "aws_subnet" "s2" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.2.0/24"
@@ -18,10 +23,16 @@ resource "aws_subnet" "s2" {
   map_public_ip_on_launch = true
 }
 
-# IGW + route
+#####################################################
+# INTERNET GATEWAY
+#####################################################
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
 }
+
+#####################################################
+# ROUTE TABLE + DEFAULT ROUTE
+#####################################################
 resource "aws_route_table" "rt" {
   vpc_id = aws_vpc.main.id
   route {
@@ -29,31 +40,41 @@ resource "aws_route_table" "rt" {
     gateway_id = aws_internet_gateway.igw.id
   }
 }
+
+#####################################################
+# ROUTE TABLE ASSOCIATIONS
+#####################################################
 resource "aws_route_table_association" "rta1" {
   subnet_id      = aws_subnet.s1.id
   route_table_id = aws_route_table.rt.id
 }
+
 resource "aws_route_table_association" "rta2" {
   subnet_id      = aws_subnet.s2.id
   route_table_id = aws_route_table.rt.id
 }
 
-# Security Group (HTTP + SSH)
+#####################################################
+# SECURITY GROUP (HTTP + SSH)
+#####################################################
 resource "aws_security_group" "web_sg" {
   name   = "lab-web-sg"
   vpc_id = aws_vpc.main.id
+
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -62,7 +83,11 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-# Launch Template (AMI: Amazon Linux 2)
+#####################################################
+# LAUNCH TEMPLATE (NGINX + USER DATA)
+#####################################################
+
+# AMI Amazon Linux 2
 data "aws_ami" "amzn2" {
   most_recent = true
   owners      = ["amazon"]
@@ -76,6 +101,7 @@ resource "aws_launch_template" "lt" {
   name_prefix   = "lab-lt-"
   image_id      = data.aws_ami.amzn2.id
   instance_type = "t3.micro"
+
   network_interfaces {
     security_groups = [aws_security_group.web_sg.id]
     associate_public_ip_address = true
@@ -92,7 +118,9 @@ resource "aws_launch_template" "lt" {
   )
 }
 
-# ALB
+#####################################################
+# APPLICATION LOAD BALANCER (ALB)
+#####################################################
 resource "aws_lb" "alb" {
   name               = "lab-alb"
   load_balancer_type = "application"
@@ -100,11 +128,15 @@ resource "aws_lb" "alb" {
   security_groups    = [aws_security_group.web_sg.id]
 }
 
+#####################################################
+# TARGET GROUP
+#####################################################
 resource "aws_lb_target_group" "tg" {
   name     = "lab-tg"
   port     = 80
   protocol = "HTTP"
   vpc_id   = aws_vpc.main.id
+
   health_check {
     path                = "/"
     matcher             = "200-399"
@@ -115,6 +147,9 @@ resource "aws_lb_target_group" "tg" {
   }
 }
 
+#####################################################
+# ALB LISTENER
+#####################################################
 resource "aws_lb_listener" "listener" {
   load_balancer_arn = aws_lb.alb.arn
   port              = "80"
@@ -125,19 +160,24 @@ resource "aws_lb_listener" "listener" {
   }
 }
 
-# Auto Scaling Group (adaptado para Learner Lab)
+#####################################################
+# AUTO SCALING GROUP (ASG)
+#####################################################
 resource "aws_autoscaling_group" "asg" {
   name                = "lab-asg"
   max_size            = 5
   min_size            = 2
   desired_capacity    = 3
   vpc_zone_identifier = [aws_subnet.s1.id, aws_subnet.s2.id]
+
   launch_template {
     id      = aws_launch_template.lt.id
     version = "$Latest"
   }
+
   target_group_arns = [aws_lb_target_group.tg.arn]
   health_check_type = "ELB"
+
   tag {
     key                 = "Name"
     value               = "lab-asg-instance"
@@ -145,7 +185,9 @@ resource "aws_autoscaling_group" "asg" {
   }
 }
 
-# Simple scale-out policy (CPU)
+#####################################################
+# AUTO SCALING POLICY #1 — SCALE OUT BY CPU USAGE
+#####################################################
 resource "aws_autoscaling_policy" "scale_out" {
   name                   = "lab-scale-out"
   autoscaling_group_name = aws_autoscaling_group.asg.name
@@ -153,7 +195,6 @@ resource "aws_autoscaling_policy" "scale_out" {
   scaling_adjustment     = 1
 }
 
-# CloudWatch alarm CPU
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name          = "lab-asg-cpu-high"
   comparison_operator = "GreaterThanThreshold"
@@ -172,10 +213,8 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
 }
 
 #####################################################
-# 🔥 NUEVO: ESCALADO BASADO EN REQUESTS DEL ALB 🔥
+# AUTO SCALING POLICY #2 — SCALE OUT BY ALB REQUEST COUNT
 #####################################################
-
-# Nueva política: scale-out basado en requests
 resource "aws_autoscaling_policy" "scale_out_requests" {
   name                   = "asg-scale-out-requests"
   autoscaling_group_name = aws_autoscaling_group.asg.name
@@ -183,12 +222,11 @@ resource "aws_autoscaling_policy" "scale_out_requests" {
   scaling_adjustment     = 1
 }
 
-# Alarma si cada instancia recibe demasiados requests
 resource "aws_cloudwatch_metric_alarm" "high_requests" {
   alarm_name          = "asg-high-request-per-target"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
-  threshold           = 80         # >80 requests/instancia
+  threshold           = 80
   period              = 60
   metric_name         = "RequestCountPerTarget"
   namespace           = "AWS/ApplicationELB"
@@ -202,10 +240,13 @@ resource "aws_cloudwatch_metric_alarm" "high_requests" {
   }
 }
 
-# Outputs
+#####################################################
+# OUTPUTS
+#####################################################
 output "alb_dns" {
   value = aws_lb.alb.dns_name
 }
+
 output "asg_name" {
   value = aws_autoscaling_group.asg.name
 }
